@@ -1,0 +1,9 @@
+# resources/SHOU/adapters.yaml
+adapters:
+  - adapter_id: "SHOU_01"
+    adapter_name: "上海海洋大学URP教务"
+    category: "BACHELOR_AND_ASSOCIATE"
+    asset_js_path: "shou_01.js"
+    import_url: "https://urp.shou.edu.cn/"
+    maintainer: "shouCS"
+    description: "上海海洋大学URP教务(urp.shou.edu.cn), 登录后进入【学生选课-本学期课表】页面执行导入; 同时读取教务接口与页面课表, 自动带入作息时间(18周/12节)"
