@@ -1304,6 +1304,11 @@ schools:
     initial: "W"
     resource_folder: "WZZY"
 
+  - id: "WHPU"
+    name: "武汉轻工大学"
+    initial: "W"
+    resource_folder: "WHPU"
+
 
   - id: "ZJSRU"
     name: "浙江树人学院"
