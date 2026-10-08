@@ -359,7 +359,71 @@ async function fetchScheduleJson() {
 }
 
 // ========== 合并 / 规整 ==========
-// 同一门课(课程号+课序号)在同一星期同一节次的多个课块: 合并周次, 地点不一致时写入备注
+// 地点规整:
+//  1. 去掉校区前缀"临"(上海海洋大学临港校区, 所有教室都带这个前缀)
+//  2. 合并两路数据里写法不同的同一地点:
+//     - 接口给 "临"+"公共实验楼"+"A309" -> "临公共实验楼A309"
+//     - 页面(或另一路)可能给 "公共实验楼A309"
+//     去掉前缀后前者变成 "公共实验楼A309", 与后者一致, 于是不会出现重复地点
+function cleanPosition(raw) {
+    let pos = normText(raw);
+    if (!pos) return "";
+    pos = pos.replace(/^(临港校区|临港|临)\s*/, "");
+    return pos.trim();
+}
+
+// 周次数组 -> "4-18周" / "5-6,8周" 这样的紧凑文本(调试输出用)
+function formatWeekRanges(weeks) {
+    const arr = Array.from(new Set(weeks)).sort((a, b) => a - b);
+    const parts = [];
+    let start = null;
+    let prev = null;
+    arr.forEach(w => {
+        if (start === null) { start = w; prev = w; return; }
+        if (w === prev + 1) { prev = w; return; }
+        parts.push(start === prev ? String(start) : start + "-" + prev);
+        start = w;
+        prev = w;
+    });
+    if (start !== null) parts.push(start === prev ? String(start) : start + "-" + prev);
+    return parts.join(",") + "周";
+}
+// 调试提示: 控制台执行 __SHOU_DEBUG__ = true 后重新导入, 会打印每条课程的周次与地点
+debugLog("适配脚本已加载; 如需详细日志请在控制台执行 __SHOU_DEBUG__ = true");
+
+// 同一门课在同一星期同一节次有多个地点/教师时, 拆成多条独立记录(周次各自保留),
+// 这样应用里可以分别看到每一条的地点、教师和上课周次, 不会被并成一条
+function buildEntries(block) {
+    const groups = [];
+    block.positions.forEach(p => {
+        const weeks = Array.from(new Set(p.weeks)).sort((a, b) => a - b);
+        if (!weeks.length) return;
+        const position = cleanPosition(p.position);
+        const teacher = normText(p.teacher);
+        let g = groups.find(x => x.position === position && x.teacher === teacher);
+        if (!g) {
+            g = { position: position, teacher: teacher, weeks: [] };
+            groups.push(g);
+        }
+        g.weeks = Array.from(new Set(g.weeks.concat(weeks))).sort((a, b) => a - b);
+    });
+    if (!groups.length) return [];
+
+    return groups.map(g => ({
+        name: block.name,
+        teacher: g.teacher,
+        position: g.position || "未知地点",
+        day: block.day,
+        startSection: block.startSection,
+        endSection: block.endSection,
+        weeks: g.weeks,
+        remark: "",
+        isCustomTime: false
+    }));
+}
+
+// 单一路解析结果: 先按 课程号+课序号(无课程号时用名称+教师) 分组, 只合并周次,
+// 保留每个地点及其对应周次, 交给 buildEntries 按"地点+教师"拆分
 function mergeBlocks(blocks) {
     const groups = new Map();
     blocks.forEach(b => {
@@ -368,77 +432,88 @@ function mergeBlocks(blocks) {
         groups.get(gk).push(b);
     });
 
-    const courses = [];
+    const entries = [];
     groups.forEach(list => {
-        const weeks = new Set();
-        const positions = [];
-        let teacher = "";
-        list.forEach(b => {
-            b.weeks.forEach(w => weeks.add(w));
-            const pos = normText(b.position) || "未知地点";
-            if (!positions.includes(pos)) positions.push(pos);
-            if (!teacher && b.teacher) teacher = b.teacher; // 同名课块教师可能只在其中一块上有值
-        });
         const first = list[0];
-        const multiplePositions = [...positions].sort().length > 1;
-        courses.push({
+        const block = {
             name: first.name,
-            teacher: teacher,
-            position: multiplePositions ? [...positions].sort().join(" / ") : positions[0],
             day: first.day,
             startSection: first.startSection,
             endSection: first.endSection,
-            weeks: Array.from(weeks).sort((a, b) => a - b),
-            remark: multiplePositions ? "上课地点: " + [...positions].sort().join(" / ") : "",
-            isCustomTime: false
+            positions: []
+        };
+        list.forEach(b => {
+            const pos = normText(b.position);
+            let p = block.positions.find(x => x.position === pos);
+            if (!p) {
+                p = { position: pos, teacher: normText(b.teacher), weeks: [] };
+                block.positions.push(p);
+            }
+            if (!p.teacher && b.teacher) p.teacher = normText(b.teacher);
+            p.weeks = p.weeks.concat(b.weeks);
         });
+        entries.push.apply(entries, buildEntries(block));
     });
 
-    return courses
+    return entries
         .filter(c => c.name && c.weeks.length && c.day >= 1 && c.day <= 7 && c.endSection >= c.startSection)
         .sort((a, b) => a.day - b.day || a.startSection - b.startSection || a.name.localeCompare(b.name, "zh"));
 }
 
-// 两路解析结果合并: 同一门课(名称+教师+星期+节次)的周次取并集,
-// 课块因页面重叠展示而不完整时(例如同一格被另一门课挤掉)也能补全
+// 把两条信息量不同的同一条记录合并(接口与页面存在写法差异时用)
+function mergeEntryPair(a, b) {
+    a.weeks = Array.from(new Set(a.weeks.concat(b.weeks))).sort((x, y) => x - y);
+    if (a._names.indexOf(b.name) === -1) a._names.push(b.name);
+    if (!a.teacher && b.teacher) a.teacher = b.teacher;
+    if (!normText(a.position) && normText(b.position)) a.position = b.position;
+    return a;
+}
+
+// 两路解析结果合并: 逐条比较, 同一条(名称+教师+地点+星期+节次)只保留一份并合并周次,
+// 而不是把不同地点/不同时段并成一条 —— 保证应用里每条课程都能区分
 function mergeCourseSources(apiCourses, domCourses) {
     const index = new Map();
     const order = [];
-    const normName = s => normText(s).replace(/[\s_()（）]/g, "");
+    const normName = s => normText(s).replace(/[\s_()（）]/g, "").replace(/-\d+$/, "");
     const normTeacher = s => normText(s).replace(/[\s*]/g, "");
 
     [apiCourses, domCourses].forEach(list => {
         list.forEach(c => {
-            const key = [normName(c.name), normTeacher(c.teacher), c.day, c.startSection, c.endSection].join("#");
+            const key = [
+                normName(c.name),
+                normTeacher(c.teacher),
+                normText(c.position),
+                c.day,
+                c.startSection,
+                c.endSection
+            ].join("#");
             const exist = index.get(key);
             if (!exist) {
                 const copy = Object.assign({}, c);
                 copy._names = [c.name];
-                copy._positions = normText(c.position) ? [normText(c.position)] : [];
+                copy._weeks = c.weeks.slice();
                 index.set(key, copy);
                 order.push(copy);
                 return;
             }
-            const weeks = new Set(exist.weeks.concat(c.weeks));
-            exist.weeks = Array.from(weeks).sort((a, b) => a - b);
-            if (exist._names.indexOf(c.name) === -1) exist._names.push(c.name);
-            const pos = normText(c.position);
-            if (pos && exist._positions.indexOf(pos) === -1) exist._positions.push(pos);
+            mergeEntryPair(exist, c);
         });
     });
 
+    debugLog("合并后课程条目:", order.length);
+    order.forEach(c => debugLog("  " + c.name + " | " + cleanPosition(c.position) + " | " + formatWeekRanges(c._weeks)));
+
     return order.map(c => {
-        const positions = c._positions.slice().sort();
-        const multiple = positions.length > 1;
+        c.weeks = c._weeks;
         return {
             name: c._names[0],
             teacher: c.teacher,
-            position: multiple ? positions.join(" / ") : (positions[0] || "未知地点"),
+            position: c.position || "未知地点",
             day: c.day,
             startSection: c.startSection,
             endSection: c.endSection,
             weeks: c.weeks,
-            remark: multiple ? "上课地点: " + positions.join(" / ") : "",
+            remark: "",
             isCustomTime: false
         };
     }).sort((a, b) => a.day - b.day || a.startSection - b.startSection || a.name.localeCompare(b.name, "zh"));
