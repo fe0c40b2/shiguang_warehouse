@@ -1,0 +1,9 @@
+# resources/WHPU/adapters.yaml
+adapters:
+  - adapter_id: "WHPU_01"
+    adapter_name: "武汉轻工大学正方教务"
+    category: "BACHELOR_AND_ASSOCIATE"
+    asset_js_path: "whpu_01.js"
+    import_url: "https://jwglxt.whpu.edu.cn"
+    maintainer: "shouCS"
+    description: "武汉轻工大学正方教务(jwglxt.whpu.edu.cn), 登录后进入【信息查询-学生课表查询】页面执行导入; 自动跳过红色斜体(待筛选)课程, 并带入 11 节作息时间与校历开学日期"
